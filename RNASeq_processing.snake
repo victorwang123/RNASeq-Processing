@@ -1,0 +1,89 @@
+# Snakefile  
+  
+workdir: "."  
+  
+rule read_data:  
+    input:  
+        "featureCounts.txt",  
+    output:  
+        "combined.tsv"  
+    shell:  
+        """  
+        Rscript -e '  
+        library(ggplot2)  
+        library(DESeq2)  
+        raw_df <- read.table(file = "{input[0]}", sep = "\\t", header = TRUE)  
+        rownames(raw_df) <- raw_df[,1]  
+        count_df <- raw_df[,c(7:20)]  
+        combined <- count_df[,c("D3E.sort.bam","D4E.sort.bam","DE.sort.bam","DE2.sort.bam","DO4E2.sort.bam","DO4E.sort.bam","D4M.sort.bam","DM.sort.bam","DM2.sort.bam","DO4M2.sort.bam","DO4M.sort.bam")] # 省略其他列名  
+        colnames(combined) <- c("DE2","DE","D04E","D04E2","D3E","D4E","DM2","DM","D04M2","D04M","D4M") 
+        write.table(combined, file = "{output}", sep = "\\t", row.names = TRUE, quote = FALSE)  
+        '  
+        """  
+  
+rule filter_and_deseq2:  
+    input:  
+        "combined.tsv"  
+    output:  
+        "filtered_counts.tsv",  
+        "deseq2_results.tsv"  
+    shell:  
+        """  
+        Rscript -e '  
+        library(DESeq2)  
+        combined <- read.table(file = "{input}", header = TRUE, row.names = 1, sep = "\\t")  
+        count_df.filter <- combined[rowSums(combined) > 20, ]
+        data<-count_df.filter[,c("DE2","DE","D04E","D04E2","D3E","D4E","DM2","DM","D04M2","D04M","D4M")]
+
+        sample_df <- data.frame(
+        condition = factor(c(rep("E",6),rep("M",5)),levels=c("M","E"))
+)
+        rownames(sample_df) <- colnames(data)
+        deseq2.obj <- DESeqDataSetFromMatrix(countData = data, colData = sample_df, design = ~condition)
+        deseq2.obj <- DESeq(deseq2.obj)
+        deseq2.obj.res <- results(deseq2.obj)
+        deseq2.obj.res.df <- as.data.frame(deseq2.obj.res)
+        data1=subset(deseq2.obj.res.df,abs(log2FoldChange)> 2 & padj<0.05)
+        write.table(filtered_counts, file = "{output[0]}", sep = "\\t", quote = FALSE)  
+        write.csv(deseq2.obj.res.df, file = "{output[1]}", row.names = FALSE)  
+        '  
+        """  
+  
+rule go_enrichment:  
+    input:  
+        "deseq2_results.tsv"  
+    output:  
+        "go_enrichment_results.tsv",  
+        "go_enrichment_plot.pdf"  
+    shell:  
+        """  
+        Rscript -e '  
+        library(org.Hs.eg.db)  
+        library(clusterProfiler)  
+        enrich.go <- enrichGO(gene = rownames(data1),
+                      OrgDb = 'org.Hs.eg.db',
+                      keyType = 'SYMBOL',
+                      ont = 'BP',
+                      pAdjustMethod = 'fdr',
+                      pvalueCutoff = 0.05,
+                      qvalueCutoff = 0.2)
+        p1<-dotplot(enrich.go,showCategory=20)+theme(panel.grid=element_blank())
+        gene.symbol <- bitr(geneID = rownames(data1),
+                    fromType = "SYMBOL",
+                    toType = "ENTREZID",
+                    OrgDb = org.Hs.eg.db)
+        kegg <- enrichKEGG(
+        gene = gene.symbol$ENTREZID,
+        keyType = 'kegg',
+        organism = 'hsa',
+        pAdjustMethod = "fdr",
+        pvalueCutoff = 0.05,
+        qvalueCutoff = 0.2,
+        use_internal_data=T)
+        p2<-dotplot(kegg,showCategory=20)+theme(panel.grid=element_blank())
+        write.csv(enrich.go@result, file = "{output[0]}", row.names = FALSE) 
+        pdf("{output[1]}")  
+        dotplot(enrich.go, showCategory = 20)  
+        dev.off()
+        '  
+        """
